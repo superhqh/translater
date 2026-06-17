@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Translator</title>
+    <link rel="stylesheet" href="src/popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <div>
+          <h1>本地沉浸翻译</h1>
+          <p>使用你自己的 OpenAI API Key</p>
+        </div>
+        <span id="statusDot" class="dot" aria-label="状态"></span>
+      </header>
+
+      <section class="section">
+        <label for="apiKey">OpenAI API Key</label>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
+      </section>
+
+      <section class="grid">
+        <div>
+          <label for="model">模型</label>
+          <input id="model" type="text" autocomplete="off" />
+        </div>
+        <div>
+          <label for="targetLanguage">目标语言</label>
+          <input id="targetLanguage" type="text" autocomplete="off" />
+        </div>
+      </section>
+
+      <section class="section inline">
+        <label class="check">
+          <input id="autoTranslate" type="checkbox" />
+          <span>打开页面后自动翻译正文</span>
+        </label>
+      </section>
+
+      <section class="actions">
+        <button id="save" type="button">保存设置</button>
+        <button id="translatePage" type="button" class="primary">翻译当前页</button>
+      </section>
+
+      <section class="actions">
+        <button id="clearTranslations" type="button">清除页面译文</button>
+        <button id="clearCache" type="button">清空缓存</button>
+      </section>
+
+      <p id="message" class="message" role="status"></p>
+    </main>
+
+    <script src="src/popup.js"></script>
+  </body>
+</html>

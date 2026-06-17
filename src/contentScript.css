@@ -1,0 +1,68 @@
+.local-immersive-translation {
+  box-sizing: border-box;
+  margin: 0.45em 0 0.9em;
+  padding: 0.62em 0.8em;
+  border-left: 3px solid #188977;
+  background: #f2fbf8;
+  color: #21423c;
+  font-size: 0.94em;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.local-immersive-translation.is-loading {
+  color: #64748b;
+  background: #f8fafc;
+  border-left-color: #94a3b8;
+}
+
+.local-immersive-translation.is-error {
+  color: #8a1f1f;
+  background: #fff4f2;
+  border-left-color: #e15241;
+}
+
+.local-immersive-selection-popover {
+  position: absolute;
+  z-index: 2147483647;
+  width: min(380px, calc(100vw - 24px));
+  max-height: 260px;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 12px 38px 12px 14px;
+  border: 1px solid #d6e3df;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2937;
+  box-shadow: 0 16px 42px rgba(15, 23, 42, 0.18);
+  font: 14px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.local-immersive-selection-popover.is-loading {
+  color: #64748b;
+}
+
+.local-immersive-selection-popover.is-error {
+  border-color: #f0b8af;
+  color: #8a1f1f;
+}
+
+.local-immersive-selection-close {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 20px;
+}
+
+.local-immersive-selection-close:hover {
+  background: #eef3f2;
+  color: #111827;
+}

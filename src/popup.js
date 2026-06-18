@@ -2,6 +2,7 @@ const fields = {
   apiKey: document.querySelector("#apiKey"),
   model: document.querySelector("#model"),
   targetLanguage: document.querySelector("#targetLanguage"),
+  translationMode: document.querySelector("#translationMode"),
   autoTranslate: document.querySelector("#autoTranslate"),
   message: document.querySelector("#message"),
   statusDot: document.querySelector("#statusDot")
@@ -19,6 +20,7 @@ async function loadSettings() {
   fields.apiKey.value = settings.apiKey || "";
   fields.model.value = settings.model || "kimi-k2.6";
   fields.targetLanguage.value = settings.targetLanguage || "简体中文";
+  fields.translationMode.value = settings.translationMode || "bilingual";
   fields.autoTranslate.checked = Boolean(settings.autoTranslate);
   updateKeyState(Boolean(settings.apiKey));
 }
@@ -30,6 +32,7 @@ async function saveSettings() {
       apiKey: fields.apiKey.value,
       model: fields.model.value,
       targetLanguage: fields.targetLanguage.value,
+      translationMode: fields.translationMode.value,
       autoTranslate: fields.autoTranslate.checked
     }
   });
@@ -74,6 +77,7 @@ async function ensureSettingsSaved() {
       apiKey: fields.apiKey.value,
       model: fields.model.value,
       targetLanguage: fields.targetLanguage.value,
+      translationMode: fields.translationMode.value,
       autoTranslate: fields.autoTranslate.checked
     }
   });

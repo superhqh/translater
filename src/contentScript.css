@@ -22,6 +22,38 @@
   border-left-color: #e15241;
 }
 
+.local-immersive-inline-translation {
+  display: inline;
+  margin-left: 0.35em;
+  padding: 0 0.28em;
+  border-radius: 4px;
+  background: rgba(242, 251, 248, 0.92);
+  color: #257063;
+  font-size: 0.88em;
+  line-height: inherit;
+  white-space: normal;
+}
+
+.local-immersive-inline-translation::before {
+  content: "(";
+  color: #6b8f88;
+}
+
+.local-immersive-inline-translation::after {
+  content: ")";
+  color: #6b8f88;
+}
+
+.local-immersive-inline-translation.is-loading {
+  color: #64748b;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.local-immersive-inline-translation.is-error {
+  color: #8a1f1f;
+  background: rgba(255, 244, 242, 0.95);
+}
+
 .local-immersive-selection-action {
   position: absolute;
   z-index: 2147483647;

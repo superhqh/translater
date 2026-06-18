@@ -22,6 +22,32 @@
   border-left-color: #e15241;
 }
 
+.local-immersive-selection-action {
+  position: absolute;
+  z-index: 2147483647;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(14, 116, 99, 0.45);
+  border-radius: 50%;
+  background: #0f8f7b;
+  color: #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.22);
+  cursor: pointer;
+  font: 700 16px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.local-immersive-selection-action:hover {
+  background: #0b7567;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.28);
+}
+
+.local-immersive-selection-action:focus-visible {
+  outline: 3px solid rgba(15, 143, 123, 0.28);
+  outline-offset: 2px;
+}
+
 .local-immersive-selection-popover {
   position: absolute;
   z-index: 2147483647;

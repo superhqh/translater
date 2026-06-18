@@ -5,6 +5,9 @@ const MAX_TEXT_LENGTH = 1800;
 
 let isPageTranslating = false;
 let selectionPopover = null;
+let selectionAction = null;
+let pendingSelectionText = "";
+let pendingSelectionRect = null;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "translatePage") {
@@ -23,10 +26,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
+document.addEventListener("mousedown", handleSelectionMousedown, true);
 document.addEventListener("mouseup", handleSelectionMouseup);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    removeSelectionPopover();
+    removeSelectionUi();
   }
 });
 
@@ -145,7 +149,7 @@ function isReadableBlock(element) {
     return false;
   }
 
-  if (element.closest(`.${TRANSLATION_CLASS}, script, style, noscript, pre, code, textarea, input, select, button, nav, header, footer, aside`)) {
+  if (element.closest(`.${TRANSLATION_CLASS}, script, style, noscript, pre, code, textarea, input, select, button, nav, header, footer, aside, [class*="code"], [class*="Code"], [class*="syntax"], [class*="highlight"]`)) {
     return false;
   }
 
@@ -155,6 +159,10 @@ function isReadableBlock(element) {
 
   const text = getElementText(element);
   if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) {
+    return false;
+  }
+
+  if (looksLikeCodeBlock(element.innerText || text)) {
     return false;
   }
 
@@ -171,6 +179,25 @@ function isReadableBlock(element) {
   return true;
 }
 
+function looksLikeCodeBlock(text) {
+  const lines = text.split(/\n|(?=<)/).filter((line) => line.trim());
+  const codeIndicators = [
+    /```/,
+    /<!doctype\s+html/i,
+    /<html[\s>]/i,
+    /<\/?[a-z][\w:-]*(\s|>)/i,
+    /;\s*$/,
+    /^\s*(const|let|var|function|class|import|export)\s+/,
+    /^\s*[.#]?[\w-]+\s*\{/,
+    /=>/,
+    /<\/script>|<script[\s>]/i,
+    /<\/style>|<style[\s>]/i
+  ];
+  const codeLineCount = lines.filter((line) => codeIndicators.some((pattern) => pattern.test(line))).length;
+
+  return codeLineCount >= 3 || codeLineCount / Math.max(lines.length, 1) > 0.35;
+}
+
 function getElementText(element) {
   return element.innerText.replace(/\s+/g, " ").trim();
 }
@@ -182,43 +209,108 @@ function clearTranslations() {
   });
 }
 
-function handleSelectionMouseup() {
-  window.setTimeout(async () => {
+function handleSelectionMousedown(event) {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+
+  if (event.target.closest(".local-immersive-selection-popover, .local-immersive-selection-action")) {
+    return;
+  }
+
+  removeSelectionUi();
+}
+
+function handleSelectionMouseup(event) {
+  if (event.target instanceof Element && event.target.closest(".local-immersive-selection-popover, .local-immersive-selection-action")) {
+    return;
+  }
+
+  window.setTimeout(() => {
     const selection = window.getSelection();
     const text = selection?.toString().replace(/\s+/g, " ").trim();
 
     if (!text || text.length < 2 || text.length > 1200) {
+      removeSelectionAction();
       return;
     }
 
     const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
     if (!range) {
+      removeSelectionAction();
       return;
     }
 
-    showSelectionPopover(range, "正在翻译...");
-
-    try {
-      const response = await sendMessage({
-        type: "translateText",
-        payload: { text }
-      });
-
-      if (!response.ok) {
-        throw new Error(response.error || "翻译失败");
-      }
-
-      updateSelectionPopover(response.text, response.cached);
-    } catch (error) {
-      updateSelectionPopover(error.message, false, true);
-    }
+    showSelectionAction(range, text);
   }, 80);
 }
 
-function showSelectionPopover(range, text) {
-  removeSelectionPopover();
+function showSelectionAction(range, text) {
+  removeSelectionUi();
 
   const rect = range.getBoundingClientRect();
+  if (!rect.width && !rect.height) {
+    return;
+  }
+
+  pendingSelectionText = text;
+  pendingSelectionRect = rect;
+  selectionAction = document.createElement("button");
+  selectionAction.className = "local-immersive-selection-action";
+  selectionAction.type = "button";
+  selectionAction.title = "翻译选中文本";
+  selectionAction.setAttribute("aria-label", "翻译选中文本");
+  selectionAction.textContent = "译";
+  selectionAction.addEventListener("mousedown", (event) => event.preventDefault());
+  selectionAction.addEventListener("click", handleSelectionActionClick);
+  document.documentElement.append(selectionAction);
+
+  const top = Math.max(12, rect.bottom + window.scrollY + 8);
+  const left = Math.min(
+    window.scrollX + document.documentElement.clientWidth - selectionAction.offsetWidth - 12,
+    Math.max(12, rect.right + window.scrollX - selectionAction.offsetWidth)
+  );
+
+  selectionAction.style.top = `${top}px`;
+  selectionAction.style.left = `${left}px`;
+}
+
+async function handleSelectionActionClick(event) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const text = pendingSelectionText;
+  const rect = selectionAction?.getBoundingClientRect() || pendingSelectionRect;
+  if (!text || !rect) {
+    removeSelectionUi();
+    return;
+  }
+
+  removeSelectionAction();
+  showSelectionPopoverAtRect(rect, "正在翻译...");
+
+  try {
+    const response = await sendMessage({
+      type: "translateText",
+      payload: {
+        text,
+        context: "selection"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(response.error || "翻译失败");
+    }
+
+    updateSelectionPopover(response.text, response.cached);
+  } catch (error) {
+    updateSelectionPopover(error.message, false, true);
+  }
+}
+
+function showSelectionPopoverAtRect(rect, text) {
+  removeSelectionPopover();
+
   selectionPopover = document.createElement("div");
   selectionPopover.className = "local-immersive-selection-popover is-loading";
   selectionPopover.innerHTML = `
@@ -255,6 +347,18 @@ function updateSelectionPopover(text, cached = false, isError = false) {
 function removeSelectionPopover() {
   selectionPopover?.remove();
   selectionPopover = null;
+}
+
+function removeSelectionAction() {
+  selectionAction?.remove();
+  selectionAction = null;
+  pendingSelectionText = "";
+  pendingSelectionRect = null;
+}
+
+function removeSelectionUi() {
+  removeSelectionAction();
+  removeSelectionPopover();
 }
 
 function sendMessage(message) {

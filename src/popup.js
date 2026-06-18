@@ -17,7 +17,7 @@ loadSettings();
 async function loadSettings() {
   const settings = await sendRuntimeMessage({ type: "getSettings" });
   fields.apiKey.value = settings.apiKey || "";
-  fields.model.value = settings.model || "gpt-4.1-mini";
+  fields.model.value = settings.model || "kimi-k2.6";
   fields.targetLanguage.value = settings.targetLanguage || "简体中文";
   fields.autoTranslate.checked = Boolean(settings.autoTranslate);
   updateKeyState(Boolean(settings.apiKey));

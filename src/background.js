@@ -1,6 +1,6 @@
 const DEFAULT_SETTINGS = {
   apiKey: "",
-  model: "gpt-4.1-mini",
+  model: "kimi-k2.6",
   targetLanguage: "简体中文",
   autoTranslate: false,
   maxPageSegments: 40
@@ -45,7 +45,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function getSettings() {
   const { settings } = await chrome.storage.local.get(SETTINGS_STORAGE_KEY);
-  return { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  const merged = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  if (!merged.model || merged.model.startsWith("gpt-")) {
+    merged.model = DEFAULT_SETTINGS.model;
+  }
+  return merged;
 }
 
 async function saveSettings(nextSettings = {}) {
@@ -73,7 +77,7 @@ async function translateText(payload = {}) {
   }
 
   if (!settings.apiKey) {
-    throw new Error("请先在插件弹窗里保存 OpenAI API Key。");
+    throw new Error("请先在插件弹窗里保存 Kimi API Key。");
   }
 
   const cacheKey = makeCacheKey({ model, targetLanguage, text });
@@ -82,7 +86,7 @@ async function translateText(payload = {}) {
     return { text: cached, cached: true };
   }
 
-  const translated = await callOpenAI({
+  const translated = await callKimi({
     apiKey: settings.apiKey,
     model,
     targetLanguage,
@@ -93,8 +97,8 @@ async function translateText(payload = {}) {
   return { text: translated, cached: false };
 }
 
-async function callOpenAI({ apiKey, model, targetLanguage, text }) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
+async function callKimi({ apiKey, model, targetLanguage, text }) {
+  const response = await fetch("https://api.moonshot.cn/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -102,43 +106,48 @@ async function callOpenAI({ apiKey, model, targetLanguage, text }) {
     },
     body: JSON.stringify({
       model,
-      instructions: [
-        "You are a precise translation engine.",
-        `Translate the user's text into ${targetLanguage}.`,
-        "Preserve meaning, tone, numbers, names, URLs, markdown, and inline code.",
-        "Return only the translated text. Do not explain."
-      ].join(" "),
-      input: text
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are a precise translation engine.",
+            `Translate the user's text into ${targetLanguage}.`,
+            "Preserve meaning, tone, numbers, names, URLs, markdown, and inline code.",
+            "Return only the translated text. Do not explain."
+          ].join(" ")
+        },
+        {
+          role: "user",
+          content: text
+        }
+      ],
+      temperature: 0.2,
+      max_completion_tokens: 2048
     })
   });
 
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const detail = data?.error?.message || response.statusText || "OpenAI 请求失败。";
+    const detail = data?.error?.message || response.statusText || "Kimi 请求失败。";
     throw new Error(detail);
   }
 
   const outputText = extractOutputText(data);
   if (!outputText) {
-    throw new Error("OpenAI 返回结果里没有可用译文。");
+    throw new Error("Kimi 返回结果里没有可用译文。");
   }
 
   return outputText.trim();
 }
 
 function extractOutputText(data) {
-  if (typeof data?.output_text === "string") {
-    return data.output_text;
-  }
-
-  if (!Array.isArray(data?.output)) {
+  if (!Array.isArray(data?.choices)) {
     return "";
   }
 
-  return data.output
-    .flatMap((item) => item?.content || [])
-    .map((content) => content?.text || content?.value || "")
+  return data.choices
+    .map((choice) => choice?.message?.content || "")
     .filter(Boolean)
     .join("\n");
 }

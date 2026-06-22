@@ -214,7 +214,7 @@ function collectTranslationUnits(root, limit, mode) {
 
   for (const item of textNodes) {
     const container = findBlockContainer(item.node);
-    if (container && !shouldRenderInline(item.node, item.text)) {
+    if (container) {
       const existing = blockUnitsByContainer.get(container);
       if (existing) {
         existing.nodes.push(item.node);
@@ -689,12 +689,12 @@ function isElementVisible(element) {
 
 function findBlockContainer(node) {
   const parent = node.parentElement;
-  if (!parent || isShortUiText(node, normalizeVisibleText(node.data))) {
+  if (!parent) {
     return null;
   }
 
   const semantic = parent.closest(BLOCK_CONTAINER_SELECTOR);
-  if (semantic && !semantic.closest(EXCLUDED_ANCESTOR_SELECTOR)) {
+  if (semantic && !semantic.closest(EXCLUDED_ANCESTOR_SELECTOR) && !semantic.closest(EXCLUDED_DYNAMIC_SELECTOR)) {
     return semantic;
   }
 
@@ -719,10 +719,6 @@ function findBlockContainer(node) {
   }
 
   return null;
-}
-
-function shouldRenderInline(node, text) {
-  return isShortUiText(node, text) || !findBlockContainer(node);
 }
 
 function isShortUiText(node, text) {

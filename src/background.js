@@ -17,6 +17,7 @@ const MAX_RETRANSLATE_ATTEMPTS = 1;
 const inFlightTranslations = new Map();
 const API_MAX_CONCURRENCY = 3;
 const API_MIN_REQUEST_INTERVAL_MS = 3000;
+const API_RETRY_DELAYS_MS = [5000, 15000, 30000];
 let activeApiRequests = 0;
 let lastApiRequestStartedAt = 0;
 const apiRequestQueue = [];
@@ -289,22 +290,12 @@ function resolveBatchTranslationProfile({ model, targetLanguage, segments, conte
 }
 
 function resolveBatchModel({ context, requestedModel }) {
-  if (context === "ui" && requestedModel === DEFAULT_SETTINGS.model) {
-    return FAST_SELECTION_MODEL;
-  }
-
   return requestedModel;
 }
 
 async function callKimi({ apiKey, model, text, systemPrompt, maxTokens, temperature, thinking }) {
   const body = createKimiRequestBody({ model, text, systemPrompt, maxTokens, temperature, thinking });
-  let { response, data } = await requestKimi({ apiKey, body });
-
-  const correctedTemperature = getAllowedTemperatureFromError(data);
-  if (!response.ok && correctedTemperature !== null && correctedTemperature !== body.temperature) {
-    body.temperature = correctedTemperature;
-    ({ response, data } = await requestKimi({ apiKey, body }));
-  }
+  const { response, data } = await requestKimiWithRetries({ apiKey, body });
 
   if (!response.ok) {
     const detail = data?.error?.message || response.statusText || "Kimi 请求失败。";
@@ -333,13 +324,7 @@ async function callKimi({ apiKey, model, text, systemPrompt, maxTokens, temperat
 
 async function callKimiBatch({ apiKey, model, segments, systemPrompt, maxTokens, temperature, thinking }) {
   const body = createKimiBatchRequestBody({ model, segments, systemPrompt, maxTokens, temperature, thinking });
-  let { response, data } = await requestKimi({ apiKey, body });
-
-  const correctedTemperature = getAllowedTemperatureFromError(data);
-  if (!response.ok && correctedTemperature !== null && correctedTemperature !== body.temperature) {
-    body.temperature = correctedTemperature;
-    ({ response, data } = await requestKimi({ apiKey, body }));
-  }
+  const { response, data } = await requestKimiWithRetries({ apiKey, body });
 
   if (!response.ok) {
     const detail = data?.error?.message || response.statusText || "Kimi 请求失败。";
@@ -420,7 +405,7 @@ async function retryStrictTranslation({ apiKey, model, text, maxTokens, temperat
   });
 
   for (let attempt = 0; attempt < MAX_RETRANSLATE_ATTEMPTS; attempt += 1) {
-    const { response, data } = await requestKimi({ apiKey, body });
+    const { response, data } = await requestKimiWithRetries({ apiKey, body });
     if (!response.ok) {
       const detail = data?.error?.message || response.statusText || "Kimi 请求失败。";
       throw new Error(detail);
@@ -449,6 +434,56 @@ async function requestKimi({ apiKey, body }) {
     const data = await response.json().catch(() => ({}));
     return { response, data };
   });
+}
+
+async function requestKimiWithRetries({ apiKey, body }) {
+  const requestBody = { ...body };
+  let retryAttempt = 0;
+
+  while (true) {
+    const result = await requestKimi({ apiKey, body: requestBody });
+    const correctedTemperature = getAllowedTemperatureFromError(result.data);
+    if (!result.response.ok && correctedTemperature !== null && correctedTemperature !== requestBody.temperature) {
+      requestBody.temperature = correctedTemperature;
+      continue;
+    }
+
+    if (!shouldRetryKimiResponse(result.response, result.data) || retryAttempt >= API_RETRY_DELAYS_MS.length) {
+      return result;
+    }
+
+    await sleep(getKimiRetryDelay(result.response, retryAttempt));
+    retryAttempt += 1;
+  }
+}
+
+function shouldRetryKimiResponse(response, data) {
+  if (!response || response.ok) {
+    return false;
+  }
+
+  const message = data?.error?.message || response.statusText || "";
+  return (
+    response.status === 429 ||
+    response.status === 500 ||
+    response.status === 502 ||
+    response.status === 503 ||
+    response.status === 529 ||
+    /rate\s*limit|too many requests|overloaded|currently overloaded|请求过于频繁|限速|繁忙/i.test(message)
+  );
+}
+
+function getKimiRetryDelay(response, retryAttempt) {
+  const retryAfter = Number(response?.headers?.get("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    return Math.min(retryAfter * 1000, 60000);
+  }
+
+  return API_RETRY_DELAYS_MS[retryAttempt] || API_RETRY_DELAYS_MS[API_RETRY_DELAYS_MS.length - 1];
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function enqueueApiRequest(task) {

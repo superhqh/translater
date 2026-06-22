@@ -3,12 +3,24 @@ const INLINE_TRANSLATION_CLASS = "local-immersive-inline-translation";
 const TRANSLATED_ATTR = "data-local-immersive-translated";
 const ORIGINAL_TEXT_ATTR = "data-local-immersive-original";
 const MIN_TEXT_LENGTH = 2;
-const MAX_TEXT_LENGTH = 1800;
-const PAGE_TRANSLATION_CONCURRENCY = 3;
-const PAGE_BLOCK_BATCH_SIZE = 5;
-const PAGE_UI_BATCH_SIZE = 20;
-const PAGE_TRANSLATION_BATCH_MAX_CHARS = 5000;
+const MAX_TEXT_LENGTH = 4000;
+const PAGE_TRANSLATION_CONCURRENCY = 1;
+const PAGE_BLOCK_BATCH_SIZE = 30;
+const PAGE_TRANSLATION_BATCH_MAX_CHARS = 12000;
 const DEFAULT_MAX_TRANSLATION_UNITS = 250;
+
+const MAIN_CONTENT_SELECTOR = [
+  "main article",
+  "[role='main'] article",
+  "article",
+  "main [data-pagefind-body]",
+  "main [data-mdx-content]",
+  "main .prose",
+  "[role='main'] [data-pagefind-body]",
+  "[role='main'] .prose",
+  "main",
+  "[role='main']"
+].join(",");
 
 const BLOCK_CONTAINER_SELECTOR = [
   "p",
@@ -33,6 +45,11 @@ const EXCLUDED_ANCESTOR_SELECTOR = [
   "script",
   "style",
   "noscript",
+  "header",
+  "nav",
+  "aside",
+  "footer",
+  "dialog",
   "pre",
   "code",
   "kbd",
@@ -43,8 +60,38 @@ const EXCLUDED_ANCESTOR_SELECTOR = [
   "option",
   "svg",
   "canvas",
+  "[role='navigation']",
+  "[role='dialog']",
+  "[role='menu']",
+  "[role='menubar']",
+  "[aria-modal='true']",
   "[aria-hidden='true']",
   "[hidden]"
+].join(",");
+
+const EXCLUDED_DYNAMIC_SELECTOR = [
+  "[class*='cookie' i]",
+  "[id*='cookie' i]",
+  "[class*='consent' i]",
+  "[id*='consent' i]",
+  "[class*='modal' i]",
+  "[id*='modal' i]",
+  "[class*='popover' i]",
+  "[id*='popover' i]",
+  "[class*='toast' i]",
+  "[id*='toast' i]",
+  "[class*='tooltip' i]",
+  "[id*='tooltip' i]",
+  "[class*='sidebar' i]",
+  "[id*='sidebar' i]",
+  "[class*='side-nav' i]",
+  "[id*='side-nav' i]",
+  "[class*='toc' i]",
+  "[id*='toc' i]",
+  "[class*='table-of-contents' i]",
+  "[id*='table-of-contents' i]",
+  "[class*='search' i]",
+  "[id*='search' i]"
 ].join(",");
 
 const LOCAL_ZH_TRANSLATIONS = new Map(
@@ -137,13 +184,17 @@ async function translatePage() {
   isPageTranslating = true;
   const settings = await sendMessage({ type: "getSettings" });
   const mode = settings.translationMode || "bilingual";
-  const units = collectTranslationUnits(settings.maxPageSegments || DEFAULT_MAX_TRANSLATION_UNITS, mode);
+  const contentRoot = findMainContentRoot();
+  const units = collectTranslationUnits(contentRoot, settings.maxPageSegments || DEFAULT_MAX_TRANSLATION_UNITS, mode);
   prepareTranslationUnits(units, mode);
   const requestItems = applyLocalAndBuildRequests(units, settings);
   const batches = createRequestBatches(requestItems);
 
   try {
     await runLimitedConcurrency(batches, PAGE_TRANSLATION_CONCURRENCY, (batch) => translateRequestBatch(batch, settings));
+  } catch (error) {
+    clearLoadingPlaceholders();
+    throw error;
   } finally {
     isPageTranslating = false;
   }
@@ -151,8 +202,8 @@ async function translatePage() {
   return { count: units.length };
 }
 
-function collectTranslationUnits(limit, mode) {
-  const textNodes = collectVisibleEnglishTextNodes(limit * 8);
+function collectTranslationUnits(root, limit, mode) {
+  const textNodes = collectVisibleEnglishTextNodes(root, limit * 10);
 
   if (mode === "replace") {
     return textNodes.slice(0, limit).map(({ node, text, order }) => createTextUnit({ node, text, order, mode }));
@@ -192,14 +243,14 @@ function collectTranslationUnits(limit, mode) {
 
   return [...blockUnitsByContainer.values(), ...inlineUnits]
     .filter((unit) => isTranslatableText(unit.text))
-    .sort((a, b) => a.priority - b.priority || a.order - b.order)
+    .sort((a, b) => a.order - b.order)
     .slice(0, limit);
 }
 
-function collectVisibleEnglishTextNodes(maxNodes) {
+function collectVisibleEnglishTextNodes(root, maxNodes) {
   const nodes = [];
   let order = 0;
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = node.parentElement;
       if (!parent || nodes.length >= maxNodes) {
@@ -237,11 +288,11 @@ function collectVisibleEnglishTextNodes(maxNodes) {
 
 function createTextUnit({ node, text, order, mode }) {
   const parent = node.parentElement;
-  const context = isShortUiText(node, text) ? "ui" : "page";
+  const inline = isShortUiText(node, text);
   return {
     id: createUnitId(),
-    kind: context === "ui" ? "inline" : "text",
-    context,
+    kind: inline ? "inline" : "text",
+    context: "page",
     mode,
     node,
     text,
@@ -306,7 +357,7 @@ function applyLocalAndBuildRequests(units, settings) {
   return [...requestItemsByKey.values()].sort((a, b) => {
     const firstA = a.units[0];
     const firstB = b.units[0];
-    return firstA.priority - firstB.priority || firstA.order - firstB.order;
+    return firstA.order - firstB.order;
   });
 }
 
@@ -317,11 +368,10 @@ function createRequestBatches(items) {
   let currentContext = "";
 
   for (const item of items) {
-    const batchSize = item.context === "ui" ? PAGE_UI_BATCH_SIZE : PAGE_BLOCK_BATCH_SIZE;
     const shouldStartNewBatch =
       currentBatch.length > 0 &&
       (currentContext !== item.context ||
-        currentBatch.length >= batchSize ||
+        currentBatch.length >= PAGE_BLOCK_BATCH_SIZE ||
         currentChars + item.text.length > PAGE_TRANSLATION_BATCH_MAX_CHARS);
 
     if (shouldStartNewBatch) {
@@ -362,7 +412,7 @@ async function translateRequestBatch(batch, settings) {
     });
 
     if (!response.ok) {
-      throw new Error(response.error || "批量翻译失败");
+      throw createTranslationError(response.error || "批量翻译失败");
     }
 
     const translations = response.translations || {};
@@ -379,10 +429,37 @@ async function translateRequestBatch(batch, settings) {
       }
     }
 
-    await runLimitedConcurrency(fallbackItems, 1, (item) => translateRequestItem(item, settings));
-  } catch (_error) {
-    await runLimitedConcurrency(batch.items, 1, (item) => translateRequestItem(item, settings));
+    await translateMissingItems(fallbackItems, settings);
+  } catch (error) {
+    if (isRateLimitError(error)) {
+      applyPageLevelError(batch, "Kimi 当前繁忙或触发限速，已暂停全文翻译。请稍后重试。");
+      throw new Error("Kimi 当前繁忙或触发限速，已暂停全文翻译。请稍后重试。");
+    }
+
+    if (batch.items.length > 1) {
+      const middle = Math.ceil(batch.items.length / 2);
+      await translateRequestBatch({ context: batch.context, items: batch.items.slice(0, middle) }, settings);
+      await translateRequestBatch({ context: batch.context, items: batch.items.slice(middle) }, settings);
+      return;
+    }
+
+    await translateRequestItem(batch.items[0], settings);
   }
+}
+
+async function translateMissingItems(items, settings) {
+  if (items.length === 0) {
+    return;
+  }
+
+  if (items.length <= 2) {
+    await runLimitedConcurrency(items, 1, (item) => translateRequestItem(item, settings));
+    return;
+  }
+
+  const middle = Math.ceil(items.length / 2);
+  await translateRequestBatch({ context: items[0].context, items: items.slice(0, middle) }, settings);
+  await translateRequestBatch({ context: items[0].context, items: items.slice(middle) }, settings);
 }
 
 async function translateRequestItem(item, settings) {
@@ -391,20 +468,26 @@ async function translateRequestItem(item, settings) {
       type: "translateText",
       payload: {
         text: item.text,
-        context: item.context === "ui" ? "selection" : "page",
-        model: item.context === "ui" && settings.model === "kimi-k2.6" ? undefined : settings.model,
+        context: "page",
+        model: settings.model,
         targetLanguage: settings.targetLanguage
       }
     });
 
     if (!response.ok) {
-      throw new Error(response.error || "翻译失败");
+      throw createTranslationError(response.error || "翻译失败");
     }
 
     for (const unit of item.units) {
       applyTranslation(unit, response.text, response.cached);
     }
   } catch (error) {
+    if (isRateLimitError(error)) {
+      const message = "Kimi 当前繁忙或触发限速，已暂停全文翻译。请稍后重试。";
+      applyPageLevelError({ items: [item] }, message);
+      throw new Error(message);
+    }
+
     for (const unit of item.units) {
       applyError(unit, error.message);
     }
@@ -443,11 +526,36 @@ function applyError(unit, message) {
   unit.placeholder.textContent = message;
 }
 
+function applyPageLevelError(batch, message) {
+  const firstUnit = batch.items.flatMap((item) => item.units)[0];
+  if (firstUnit) {
+    applyError(firstUnit, message);
+  }
+
+  for (const item of batch.items) {
+    for (const unit of item.units) {
+      if (unit !== firstUnit) {
+        removeUnitPlaceholder(unit);
+      }
+    }
+  }
+}
+
+function clearLoadingPlaceholders() {
+  document
+    .querySelectorAll(`.${TRANSLATION_CLASS}.is-loading, .${INLINE_TRANSLATION_CLASS}.is-loading`)
+    .forEach((element) => element.remove());
+}
+
 function applySkippedTranslation(unit) {
   if (unit.mode === "replace") {
     return;
   }
 
+  removeUnitPlaceholder(unit);
+}
+
+function removeUnitPlaceholder(unit) {
   unit.placeholder?.remove();
   unit.placeholder = null;
 }
@@ -472,7 +580,7 @@ function isAllowedTextNode(node) {
     return false;
   }
 
-  if (parent.closest(EXCLUDED_ANCESTOR_SELECTOR)) {
+  if (parent.closest(EXCLUDED_ANCESTOR_SELECTOR) || parent.closest(EXCLUDED_DYNAMIC_SELECTOR)) {
     return false;
   }
 
@@ -489,6 +597,85 @@ function isAllowedTextNode(node) {
   }
 
   return true;
+}
+
+function findMainContentRoot() {
+  const explicitCandidates = [...document.querySelectorAll(MAIN_CONTENT_SELECTOR)]
+    .filter((element) => element instanceof HTMLElement && isMainContentCandidate(element));
+  const explicitRoot = chooseBestContentRoot(explicitCandidates);
+  if (explicitRoot) {
+    return explicitRoot;
+  }
+
+  const fallbackCandidates = [
+    ...document.querySelectorAll("main, article, [role='main'], section, [class*='content' i], [class*='article' i], [class*='prose' i], [class*='docs' i]")
+  ].filter((element) => element instanceof HTMLElement && isMainContentCandidate(element));
+
+  return chooseBestContentRoot(fallbackCandidates) || document.body;
+}
+
+function chooseBestContentRoot(candidates) {
+  let best = null;
+  let bestScore = 0;
+
+  for (const candidate of candidates) {
+    const score = getReadableContentScore(candidate);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+
+  return bestScore >= 120 ? best : null;
+}
+
+function isMainContentCandidate(element) {
+  if (element === document.body || element === document.documentElement) {
+    return false;
+  }
+
+  if (!isElementVisible(element)) {
+    return false;
+  }
+
+  if (element.matches(EXCLUDED_ANCESTOR_SELECTOR) || element.matches(EXCLUDED_DYNAMIC_SELECTOR)) {
+    return false;
+  }
+
+  return !element.closest(`header, nav, aside, footer, [role='navigation'], [role='dialog'], [aria-modal='true'], ${EXCLUDED_DYNAMIC_SELECTOR}`);
+}
+
+function getReadableContentScore(element) {
+  let score = 0;
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent) {
+        return NodeFilter.FILTER_REJECT;
+      }
+
+      if (parent.closest(EXCLUDED_ANCESTOR_SELECTOR) || parent.closest(EXCLUDED_DYNAMIC_SELECTOR)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+
+      const text = normalizeVisibleText(node.data);
+      if (!isTranslatableText(text) || shouldSkipApiTranslation(text)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  while (score < 50000) {
+    const node = walker.nextNode();
+    if (!node) {
+      break;
+    }
+    score += normalizeVisibleText(node.data).length;
+  }
+
+  return score;
 }
 
 function isElementVisible(element) {
@@ -671,6 +858,20 @@ function getElementText(element) {
 
 function createUnitId() {
   return `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createTranslationError(message) {
+  const error = new Error(message);
+  error.isRateLimit = isRateLimitMessage(message);
+  return error;
+}
+
+function isRateLimitError(error) {
+  return Boolean(error?.isRateLimit) || isRateLimitMessage(error?.message);
+}
+
+function isRateLimitMessage(message) {
+  return /429|rate\s*limit|too many requests|overloaded|currently overloaded|请求过于频繁|限速|繁忙/i.test(String(message || ""));
 }
 
 function handleSelectionMousedown(event) {

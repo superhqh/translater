@@ -12,11 +12,15 @@ document.querySelector("#save").addEventListener("click", saveSettings);
 document.querySelector("#translatePage").addEventListener("click", translateCurrentPage);
 document.querySelector("#clearTranslations").addEventListener("click", clearTranslations);
 document.querySelector("#clearCache").addEventListener("click", clearCache);
+fields.translationMode.addEventListener("change", handleTranslationModeChange);
+
+let savedSettingsSnapshot = null;
 
 loadSettings();
 
 async function loadSettings() {
   const settings = await sendRuntimeMessage({ type: "getSettings" });
+  savedSettingsSnapshot = settings;
   fields.apiKey.value = settings.apiKey || "";
   fields.model.value = settings.model || "kimi-k2.6";
   fields.targetLanguage.value = settings.targetLanguage || "简体中文";
@@ -26,24 +30,26 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  const response = await sendRuntimeMessage({
-    type: "saveSettings",
-    settings: {
-      apiKey: fields.apiKey.value,
-      model: fields.model.value,
-      targetLanguage: fields.targetLanguage.value,
-      translationMode: fields.translationMode.value,
-      autoTranslate: fields.autoTranslate.checked
-    }
-  });
-
-  updateKeyState(Boolean(response.settings?.apiKey));
-  showMessage("设置已保存。");
+  await saveCurrentSettings();
+  const modeResponse = await applyTranslationModeToCurrentTab();
+  showMessage(modeResponse?.switched ? "设置已保存，显示方式已切换。" : "设置已保存。");
 }
 
 async function translateCurrentPage() {
-  await ensureSettingsSaved();
+  const saveResult = await saveCurrentSettings();
   const tab = await getActiveTab();
+
+  if (saveResult.displayModeOnlyChange) {
+    const modeResponse = await sendTabMessage(tab.id, {
+      type: "setTranslationMode",
+      mode: fields.translationMode.value
+    });
+    if (modeResponse?.ok && modeResponse.switched) {
+      showMessage(`已切换 ${modeResponse.count} 个译文的显示方式。`);
+      return;
+    }
+  }
+
   const response = await sendTabMessage(tab.id, { type: "translatePage" });
 
   if (!response?.ok) {
@@ -59,6 +65,12 @@ async function translateCurrentPage() {
   showMessage(`已提交 ${response.count} 个段落翻译。`);
 }
 
+async function handleTranslationModeChange() {
+  await saveCurrentSettings();
+  const response = await applyTranslationModeToCurrentTab();
+  showMessage(response?.switched ? `已切换 ${response.count} 个译文的显示方式。` : "显示方式已保存。");
+}
+
 async function clearTranslations() {
   const tab = await getActiveTab();
   const response = await sendTabMessage(tab.id, { type: "clearTranslations" });
@@ -70,17 +82,56 @@ async function clearCache() {
   showMessage(response?.ok ? "翻译缓存已清空。" : "清空缓存失败。", !response?.ok);
 }
 
-async function ensureSettingsSaved() {
-  await sendRuntimeMessage({
+async function saveCurrentSettings() {
+  const nextSettings = readSettingsFromFields();
+  const previousSettings = savedSettingsSnapshot;
+  const response = await sendRuntimeMessage({
     type: "saveSettings",
-    settings: {
-      apiKey: fields.apiKey.value,
-      model: fields.model.value,
-      targetLanguage: fields.targetLanguage.value,
-      translationMode: fields.translationMode.value,
-      autoTranslate: fields.autoTranslate.checked
-    }
+    settings: nextSettings
   });
+
+  savedSettingsSnapshot = response.settings || nextSettings;
+  updateKeyState(Boolean(savedSettingsSnapshot.apiKey));
+  return {
+    settings: savedSettingsSnapshot,
+    displayModeOnlyChange: isDisplayModeOnlyChange(previousSettings, savedSettingsSnapshot)
+  };
+}
+
+function readSettingsFromFields() {
+  return {
+    apiKey: fields.apiKey.value,
+    model: fields.model.value,
+    targetLanguage: fields.targetLanguage.value,
+    translationMode: fields.translationMode.value,
+    autoTranslate: fields.autoTranslate.checked
+  };
+}
+
+function isDisplayModeOnlyChange(previousSettings, nextSettings) {
+  if (!previousSettings || !nextSettings) {
+    return false;
+  }
+
+  return (
+    previousSettings.translationMode !== nextSettings.translationMode &&
+    previousSettings.apiKey === nextSettings.apiKey &&
+    previousSettings.model === nextSettings.model &&
+    previousSettings.targetLanguage === nextSettings.targetLanguage &&
+    Boolean(previousSettings.autoTranslate) === Boolean(nextSettings.autoTranslate)
+  );
+}
+
+async function applyTranslationModeToCurrentTab() {
+  try {
+    const tab = await getActiveTab();
+    return sendTabMessage(tab.id, {
+      type: "setTranslationMode",
+      mode: fields.translationMode.value
+    });
+  } catch (_error) {
+    return { ok: false, switched: false };
+  }
 }
 
 function updateKeyState(hasKey) {

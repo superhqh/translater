@@ -141,6 +141,8 @@ let selectionAction = null;
 let pendingSelectionText = "";
 let pendingSelectionRect = null;
 let restoreRecords = [];
+let translationRecords = [];
+let currentTranslationMode = "bilingual";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "translatePage") {
@@ -153,6 +155,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "clearTranslations") {
     clearTranslations();
     sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === "setTranslationMode") {
+    const result = setTranslationMode(message.mode);
+    sendResponse({ ok: true, ...result });
     return false;
   }
 
@@ -184,6 +192,7 @@ async function translatePage() {
   isPageTranslating = true;
   const settings = await sendMessage({ type: "getSettings" });
   const mode = settings.translationMode || "bilingual";
+  currentTranslationMode = mode;
   const contentRoot = findMainContentRoot();
   const units = collectTranslationUnits(contentRoot, settings.maxPageSegments || DEFAULT_MAX_TRANSLATION_UNITS, mode);
   prepareTranslationUnits(units, mode);
@@ -204,10 +213,6 @@ async function translatePage() {
 
 function collectTranslationUnits(root, limit, mode) {
   const textNodes = collectVisibleEnglishTextNodes(root, limit * 10);
-
-  if (mode === "replace") {
-    return textNodes.slice(0, limit).map(({ node, text, order }) => createTextUnit({ node, text, order, mode }));
-  }
 
   const blockUnitsByContainer = new Map();
   const inlineUnits = [];
@@ -495,21 +500,147 @@ async function translateRequestItem(item, settings) {
 }
 
 function applyTranslation(unit, text, cached = false) {
-  if (unit.mode === "replace") {
-    rememberOriginalTextNode(unit.node);
-    unit.node.data = text;
+  const record = getOrCreateTranslationRecord(unit);
+  record.translatedText = text;
+  record.cached = cached;
+  renderTranslationRecord(record, currentTranslationMode);
+}
+
+function getOrCreateTranslationRecord(unit) {
+  let record = translationRecords.find((item) => item.id === unit.id);
+  if (record) {
+    record.placeholder = unit.placeholder || record.placeholder;
+    return record;
+  }
+
+  record = {
+    id: unit.id,
+    kind: unit.kind,
+    mode: null,
+    translatedText: "",
+    cached: false,
+    placeholder: unit.placeholder || null
+  };
+
+  if (unit.kind === "block") {
+    record.container = unit.container;
+    record.originalChildNodes = null;
+    record.originalText = getElementText(unit.container);
+  } else {
+    record.node = unit.node;
+    record.parent = unit.node.parentNode;
+    record.nextSibling = unit.node.nextSibling;
+    record.originalText = unit.node.data;
+  }
+
+  translationRecords.push(record);
+  return record;
+}
+
+function renderTranslationRecord(record, mode) {
+  if (!record.translatedText) {
     return;
   }
 
-  if (!unit.placeholder) {
+  restoreRecordOriginal(record);
+  removeRecordPlaceholder(record);
+
+  if (mode === "replace") {
+    renderRecordAsReplacement(record);
+  } else {
+    renderRecordAsBilingual(record);
+  }
+
+  record.mode = mode;
+}
+
+function renderRecordAsReplacement(record) {
+  if (record.kind === "block") {
+    if (!record.container?.isConnected) {
+      return;
+    }
+
+    captureBlockOriginalChildren(record);
+    record.container.textContent = record.translatedText;
+    record.container.setAttribute(TRANSLATED_ATTR, "true");
+    record.container.setAttribute(ORIGINAL_TEXT_ATTR, "true");
     return;
   }
 
-  unit.placeholder.classList.remove("is-loading", "is-error");
-  unit.placeholder.textContent = text;
-  if (cached) {
-    unit.placeholder.dataset.cached = "true";
+  if (!record.node?.isConnected) {
+    return;
   }
+
+  record.node.data = record.translatedText;
+  record.node.parentElement?.setAttribute(TRANSLATED_ATTR, "true");
+  record.node.parentElement?.setAttribute(ORIGINAL_TEXT_ATTR, "true");
+}
+
+function renderRecordAsBilingual(record) {
+  if (record.kind === "block") {
+    if (!record.container?.isConnected) {
+      return;
+    }
+
+    const placeholder = record.placeholder || createBlockPlaceholder();
+    record.placeholder = placeholder;
+    placeholder.classList.remove("is-loading", "is-error");
+    placeholder.textContent = record.translatedText;
+    if (record.cached) {
+      placeholder.dataset.cached = "true";
+    } else {
+      delete placeholder.dataset.cached;
+    }
+    record.container.insertAdjacentElement("afterend", placeholder);
+    record.container.setAttribute(TRANSLATED_ATTR, "true");
+    return;
+  }
+
+  if (!record.node?.isConnected) {
+    return;
+  }
+
+  const placeholder = record.placeholder || createInlinePlaceholder();
+  record.placeholder = placeholder;
+  placeholder.classList.remove("is-loading", "is-error");
+  placeholder.textContent = record.translatedText;
+  if (record.cached) {
+    placeholder.dataset.cached = "true";
+  } else {
+    delete placeholder.dataset.cached;
+  }
+  record.node.parentNode?.insertBefore(placeholder, record.node.nextSibling);
+  record.node.parentElement?.setAttribute(TRANSLATED_ATTR, "true");
+}
+
+function restoreRecordOriginal(record) {
+  if (record.kind === "block") {
+    if (!record.container?.isConnected) {
+      return;
+    }
+
+    if (record.originalChildNodes) {
+      record.container.replaceChildren(...record.originalChildNodes);
+    }
+    record.container.removeAttribute(ORIGINAL_TEXT_ATTR);
+    return;
+  }
+
+  if (record.node?.isConnected) {
+    record.node.data = record.originalText;
+    record.node.parentElement?.removeAttribute(ORIGINAL_TEXT_ATTR);
+  }
+}
+
+function captureBlockOriginalChildren(record) {
+  if (!record.originalChildNodes && record.container) {
+    record.originalChildNodes = Array.from(record.container.childNodes);
+  }
+}
+
+function removeRecordPlaceholder(record) {
+  record.placeholder?.remove();
+  record.placeholder = null;
 }
 
 function applyError(unit, message) {
@@ -778,6 +909,12 @@ function rememberOriginalTextNode(node) {
 }
 
 function clearTranslations() {
+  for (const record of translationRecords) {
+    restoreRecordOriginal(record);
+    removeRecordPlaceholder(record);
+  }
+  translationRecords = [];
+
   document.querySelectorAll(`.${TRANSLATION_CLASS}, .${INLINE_TRANSLATION_CLASS}`).forEach((element) => element.remove());
 
   for (const record of restoreRecords) {
@@ -793,6 +930,23 @@ function clearTranslations() {
   document.querySelectorAll(`[${ORIGINAL_TEXT_ATTR}]`).forEach((element) => {
     element.removeAttribute(ORIGINAL_TEXT_ATTR);
   });
+}
+
+function setTranslationMode(mode) {
+  if (!["bilingual", "replace"].includes(mode)) {
+    return { count: translationRecords.length, switched: false };
+  }
+
+  currentTranslationMode = mode;
+  const completedRecords = translationRecords.filter((record) => record.translatedText);
+  for (const record of completedRecords) {
+    renderTranslationRecord(record, mode);
+  }
+
+  return {
+    count: completedRecords.length,
+    switched: completedRecords.length > 0
+  };
 }
 
 function looksLikeCodeBlock(text) {
